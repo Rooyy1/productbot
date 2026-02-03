@@ -17,7 +17,6 @@ from telegram.ext import (
     ContextTypes
 )
 import sys
-import aiohttp
 
 # Загрузка переменных окружения
 load_dotenv()
@@ -232,9 +231,10 @@ class CourseBot:
         self.application.add_handler(CommandHandler("progress", self.progress_command))
         self.application.add_handler(CommandHandler("menu", self.main_menu))
         
+        # Исправляем регулярное выражение
         self.application.add_handler(CallbackQueryHandler(
             self.button_handler,
-            pattern="^(start_course|main_menu|lesson_\d+|submit_\d+|next_lesson|prev_lesson|check_\d+|back_to_lesson|complete_lesson_\d+|assignment_\d+|profile|about_course|about_author|feedback)$"
+            pattern=r"^(start_course|main_menu|lesson_\d+|submit_\d+|next_lesson|prev_lesson|check_\d+|back_to_lesson|complete_lesson_\d+|assignment_\d+|profile|about_course|about_author|feedback)$"
         ))
         
         self.application.add_handler(MessageHandler(
@@ -746,58 +746,51 @@ class CourseBot:
                 "Просто отправьте ваше сообщение с отзывом в чат.",
                 parse_mode='Markdown'
             )
-
-    async def delete_webhook_if_exists(self):
-        """Удалить webhook если он существует"""
+    
+    async def setup_webhook(self):
+        """Настройка webhook для продакшн среды"""
         try:
-            async with aiohttp.ClientSession() as session:
-                # Проверяем текущий webhook
-                url = f"https://api.telegram.org/bot{self.token}/getWebhookInfo"
-                async with session.get(url) as response:
-                    webhook_info = await response.json()
-                    
-                if webhook_info.get('ok') and webhook_info.get('result', {}).get('url'):
-                    logger.info(f"Найден активный webhook: {webhook_info['result']['url']}")
-                    
-                    # Удаляем webhook
-                    delete_url = f"https://api.telegram.org/bot{self.token}/deleteWebhook"
-                    async with session.get(delete_url) as delete_response:
-                        delete_result = await delete_response.json()
-                        
-                    if delete_result.get('ok'):
-                        logger.info("Webhook успешно удален")
-                    else:
-                        logger.warning(f"Не удалось удалить webhook: {delete_result}")
-                else:
-                    logger.info("Активный webhook не найден")
-                    
+            # Удаляем существующий webhook
+            await self.application.bot.delete_webhook()
+            
+            # Устанавливаем новый webhook
+            await self.application.bot.set_webhook(
+                url=WEBHOOK_URL,
+                drop_pending_updates=True
+            )
+            logger.info(f"Webhook установлен на {WEBHOOK_URL}")
+            return True
         except Exception as e:
-            logger.error(f"Ошибка при проверке/удалении webhook: {e}")
-
+            logger.error(f"Ошибка при установке webhook: {e}")
+            return False
+    
+    def run_webhook(self):
+        """Запуск бота в режиме webhook"""
+        logger.info(f"Запуск бота в режиме Webhook на порту {PORT}")
+        logger.info(f"Webhook URL: {WEBHOOK_URL}")
+        
+        # Проверяем наличие webhook URL
+        if not WEBHOOK_URL:
+            logger.error("WEBHOOK_URL не установлен. Укажите RENDER_EXTERNAL_URL в переменных окружения.")
+            return
+        
+        # Настраиваем и запускаем webhook
+        self.application.run_webhook(
+            listen="0.0.0.0",
+            port=PORT,
+            url_path="/webhook",
+            webhook_url=WEBHOOK_URL
+        )
+    
     def run_polling(self):
         """Запуск бота в режиме polling"""
         logger.info("Запуск бота в режиме Polling...")
         
-        # Запускаем polling в отдельном event loop
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        
-        try:
-            # Удаляем webhook перед запуском polling
-            loop.run_until_complete(self.delete_webhook_if_exists())
-            
-            # Запускаем polling
-            logger.info("Запускаем polling...")
-            self.application.run_polling(
-                allowed_updates=Update.ALL_TYPES,
-                close_loop=False
-            )
-        except KeyboardInterrupt:
-            logger.info("Бот остановлен")
-        except Exception as e:
-            logger.error(f"Ошибка при запуске бота: {e}")
-        finally:
-            loop.close()
+        # Запускаем polling
+        self.application.run_polling(
+            allowed_updates=Update.ALL_TYPES,
+            drop_pending_updates=True
+        )
 
 def main():
     """Основная функция"""
@@ -809,18 +802,13 @@ def main():
     
     bot = CourseBot(token)
     
-    # Проверяем наличие аргументов командной строки
-    mode = "polling"
-    if len(sys.argv) > 1:
-        mode = sys.argv[1].lower()
-        if mode not in ["polling", "webhook"]:
-            logger.warning(f"Неизвестный режим: {mode}, использую 'polling'")
-            mode = "polling"
-    
-    if mode == "polling":
-        bot.run_polling()
+    # Автоматически выбираем режим на основе наличия RENDER_EXTERNAL_URL
+    if RENDER_EXTERNAL_URL and WEBHOOK_URL:
+        logger.info("Обнаружен RENDER_EXTERNAL_URL, запускаю в режиме webhook")
+        bot.run_webhook()
     else:
-        logger.warning("Webhook режим требует дополнительной настройки сервера. Используйте polling для локальной разработки.")
+        logger.info("RENDER_EXTERNAL_URL не найден, запускаю в режиме polling")
+        bot.run_polling()
 
 if __name__ == "__main__":
     main()
