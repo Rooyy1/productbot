@@ -233,11 +233,17 @@ LESSONS = [
 user_progress_db: Dict[int, UserProgress] = {}
 
 class CourseBot:
-    def __init__(self, token: str):
-        self.token = token
-        self.application = Application.builder().token(token).build()
-        self.setup_handlers()
+    def __init__(self):
+        self.application = None
         
+    def create_application(self):
+        """Создание приложения с обработчиками"""
+        # Создаем приложение
+        self.application = Application.builder().token(BOT_TOKEN).build()
+        
+        # Настраиваем обработчики
+        self.setup_handlers()
+    
     def setup_handlers(self):
         """Настройка обработчиков"""
         self.application.add_handler(CommandHandler("start", self.start_command))
@@ -760,10 +766,8 @@ class CourseBot:
                 parse_mode='Markdown'
             )
 
-async def setup_webhook():
+async def setup_webhook(bot: Bot):
     """Настройка webhook"""
-    bot = Bot(token=BOT_TOKEN)
-    
     try:
         # Удаляем существующий webhook
         await bot.delete_webhook()
@@ -779,63 +783,23 @@ async def setup_webhook():
         logger.error(f"Ошибка при установке webhook: {e}")
         return False
 
-async def on_startup(application: Application):
-    """Действия при запуске бота"""
-    if WEBHOOK_URL:
-        logger.info("Запуск в режиме Webhook")
-        success = await setup_webhook()
-        if not success:
-            logger.error("Не удалось установить webhook")
-    else:
-        logger.info("Запуск в режиме Polling")
-
-async def on_shutdown(application: Application):
-    """Действия при остановке бота"""
-    if WEBHOOK_URL:
-        logger.info("Удаление webhook")
-        bot = application.bot
-        try:
-            await bot.delete_webhook()
-            logger.info("Webhook удален")
-        except Exception as e:
-            logger.error(f"Ошибка при удалении webhook: {e}")
-
 async def run_webhook():
     """Запуск в режиме webhook"""
-    # Создаем приложение
-    application = Application.builder().token(BOT_TOKEN).build()
-    
-    # Создаем бота
-    bot = CourseBot(BOT_TOKEN)
-    
-    # Добавляем обработчики startup/shutdown
-    application.add_handler(CommandHandler("start", bot.start_command))
-    application.add_handler(CommandHandler("progress", bot.progress_command))
-    application.add_handler(CommandHandler("menu", bot.main_menu))
-    
-    # Исправляем регулярное выражение
-    application.add_handler(CallbackQueryHandler(
-        bot.button_handler,
-        pattern=r"^(start_course|main_menu|lesson_\d+|submit_\d+|next_lesson|prev_lesson|check_\d+|back_to_lesson|complete_lesson_\d+|assignment_\d+|profile|about_course|about_author|feedback)$"
-    ))
-    
-    application.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND,
-        bot.handle_assignment_submission
-    ))
-    
-    # Добавляем обработчик ошибок
-    application.add_error_handler(bot.error_handler)
-    
-    # Настраиваем startup/shutdown
-    application.post_init = on_startup
-    application.post_shutdown = on_shutdown
-    
     logger.info(f"Запуск бота в режиме Webhook на порту {PORT}")
     logger.info(f"Webhook URL: {WEBHOOK_URL}")
     
+    # Создаем бота
+    bot_instance = CourseBot()
+    bot_instance.create_application()
+    
+    # Настраиваем webhook
+    success = await setup_webhook(bot_instance.application.bot)
+    if not success:
+        logger.error("Не удалось установить webhook")
+        return
+    
     # Запускаем webhook
-    await application.run_webhook(
+    await bot_instance.application.run_webhook(
         listen="0.0.0.0",
         port=PORT,
         url_path="/webhook",
@@ -847,21 +811,11 @@ async def run_polling():
     logger.info("Запуск бота в режиме Polling...")
     
     # Создаем бота
-    bot = CourseBot(BOT_TOKEN)
-    
-    # Настраиваем обработчики
-    bot.setup_handlers()
-    
-    # Удаляем существующий webhook перед запуском polling
-    telegram_bot = Bot(token=BOT_TOKEN)
-    try:
-        await telegram_bot.delete_webhook(drop_pending_updates=True)
-        logger.info("Webhook удален, запускаем polling...")
-    except Exception as e:
-        logger.warning(f"Ошибка при удалении webhook: {e}")
+    bot_instance = CourseBot()
+    bot_instance.create_application()
     
     # Запускаем polling
-    await bot.application.run_polling(
+    await bot_instance.application.run_polling(
         allowed_updates=Update.ALL_TYPES,
         drop_pending_updates=True
     )
@@ -884,6 +838,7 @@ def main():
             logger.info("Бот остановлен")
         except Exception as e:
             logger.error(f"Ошибка при запуске бота: {e}")
+            raise
     else:
         logger.info("RENDER_EXTERNAL_URL не найден, запускаю в режиме polling")
         
@@ -894,6 +849,7 @@ def main():
             logger.info("Бот остановлен")
         except Exception as e:
             logger.error(f"Ошибка при запуске бота: {e}")
+            raise
 
 if __name__ == "__main__":
     main()
