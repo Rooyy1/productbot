@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+import asyncio
 from datetime import datetime
 from typing import Dict, List, Optional
 from enum import Enum
@@ -15,6 +16,8 @@ from telegram.ext import (
     filters,
     ContextTypes
 )
+import sys
+import aiohttp
 
 # Загрузка переменных окружения
 load_dotenv()
@@ -25,6 +28,11 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+
+# Получаем URL для webhook из переменных окружения
+RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")
+WEBHOOK_URL = f"{RENDER_EXTERNAL_URL}/webhook" if RENDER_EXTERNAL_URL else None
+PORT = int(os.environ.get("PORT", 10000))
 
 # Структуры данных
 class UserStatus(Enum):
@@ -214,6 +222,7 @@ user_progress_db: Dict[int, UserProgress] = {}
 
 class CourseBot:
     def __init__(self, token: str):
+        self.token = token
         self.application = Application.builder().token(token).build()
         self.setup_handlers()
         
@@ -737,10 +746,58 @@ class CourseBot:
                 "Просто отправьте ваше сообщение с отзывом в чат.",
                 parse_mode='Markdown'
             )
-    
-    def run(self):
-        """Запуск бота"""
-        self.application.run_polling(allowed_updates=Update.ALL_TYPES)
+
+    async def delete_webhook_if_exists(self):
+        """Удалить webhook если он существует"""
+        try:
+            async with aiohttp.ClientSession() as session:
+                # Проверяем текущий webhook
+                url = f"https://api.telegram.org/bot{self.token}/getWebhookInfo"
+                async with session.get(url) as response:
+                    webhook_info = await response.json()
+                    
+                if webhook_info.get('ok') and webhook_info.get('result', {}).get('url'):
+                    logger.info(f"Найден активный webhook: {webhook_info['result']['url']}")
+                    
+                    # Удаляем webhook
+                    delete_url = f"https://api.telegram.org/bot{self.token}/deleteWebhook"
+                    async with session.get(delete_url) as delete_response:
+                        delete_result = await delete_response.json()
+                        
+                    if delete_result.get('ok'):
+                        logger.info("Webhook успешно удален")
+                    else:
+                        logger.warning(f"Не удалось удалить webhook: {delete_result}")
+                else:
+                    logger.info("Активный webhook не найден")
+                    
+        except Exception as e:
+            logger.error(f"Ошибка при проверке/удалении webhook: {e}")
+
+    def run_polling(self):
+        """Запуск бота в режиме polling"""
+        logger.info("Запуск бота в режиме Polling...")
+        
+        # Запускаем polling в отдельном event loop
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        try:
+            # Удаляем webhook перед запуском polling
+            loop.run_until_complete(self.delete_webhook_if_exists())
+            
+            # Запускаем polling
+            logger.info("Запускаем polling...")
+            self.application.run_polling(
+                allowed_updates=Update.ALL_TYPES,
+                close_loop=False
+            )
+        except KeyboardInterrupt:
+            logger.info("Бот остановлен")
+        except Exception as e:
+            logger.error(f"Ошибка при запуске бота: {e}")
+        finally:
+            loop.close()
 
 def main():
     """Основная функция"""
@@ -751,8 +808,19 @@ def main():
         return
     
     bot = CourseBot(token)
-    logger.info("Бот запущен...")
-    bot.run()
+    
+    # Проверяем наличие аргументов командной строки
+    mode = "polling"
+    if len(sys.argv) > 1:
+        mode = sys.argv[1].lower()
+        if mode not in ["polling", "webhook"]:
+            logger.warning(f"Неизвестный режим: {mode}, использую 'polling'")
+            mode = "polling"
+    
+    if mode == "polling":
+        bot.run_polling()
+    else:
+        logger.warning("Webhook режим требует дополнительной настройки сервера. Используйте polling для локальной разработки.")
 
 if __name__ == "__main__":
     main()
